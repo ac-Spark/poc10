@@ -1,0 +1,65 @@
+[project]
+name = "hunyuan3d-2-1"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "ac-Spark",email = "csl426@aicreate360.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ninja (==1.11.1.1)",
+    "pybind11 (==2.13.4)",
+    "transformers (==4.46.0)",
+    "diffusers (==0.30.0)",
+    "accelerate (==1.1.1)",
+    "pytorch-lightning (==1.9.5)",
+    "huggingface-hub (==0.30.2)",
+    "safetensors (==0.4.4)",
+    "numpy (==1.24.4)",
+    "scipy (==1.14.1)",
+    "einops (==0.8.0)",
+    "imageio (==2.36.0)",
+    "scikit-image (==0.24.0)",
+    "realesrgan (==0.3.0)",
+    "tb-nightly (==2.18.0a20240726)",
+    "basicsr (==1.4.2)",
+    "trimesh (==4.4.7)",
+    "pymeshlab (==2022.2.post3)",
+    "pygltflib (==1.16.3)",
+    "xatlas (==0.0.9)",
+    "open3d (==0.18.0)",
+    "omegaconf (==2.3.0)",
+    "pyyaml (==6.0.2)",
+    "configargparse (==1.7)",
+    "gradio (==5.33.0)",
+    "fastapi (==0.115.12)",
+    "uvicorn (==0.34.3)",
+    "tqdm (==4.66.5)",
+    "psutil (==6.0.0)",
+    "cupy-cuda12x (==13.4.1)",
+    "onnxruntime (==1.16.3)",
+    "torchmetrics (==1.6.0)",
+    "pydantic (==2.10.6)",
+    "timm (>=1.0.19,<2.0.0)",
+    "pythreejs (>=2.4.2,<3.0.0)"
+]
+
+[tool.poetry]
+packages = [{include = "hunyuan3d_2"}]
+
+
+[[tool.poetry.source]]
+name = "tencent"
+url = "https://mirrors.cloud.tencent.com/pypi/simple/"
+priority = "primary"
+
+
+[[tool.poetry.source]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+priority = "supplemental"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
