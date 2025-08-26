@@ -14,11 +14,30 @@
 
         body {
             font-family: 'Arial', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
+        }
+
+        .api-docs-button {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-weight: bold;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .api-docs-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.15);
         }
 
         .container {
@@ -36,7 +55,7 @@
             margin-bottom: 30px;
             font-size: 2.5em;
             font-weight: bold;
-            background: linear-gradient(45deg, #667eea, #764ba2);
+            background: linear-gradient(45deg, #2c3e50, #34495e);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -190,30 +209,16 @@
             margin-bottom: 20px;
         }
 
-        #modelList {
-            list-style: none;
-            padding: 0;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
+        .saved-models {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #e9ecef;
         }
 
-        #modelList li {
-            margin: 10px;
-        }
-
-        #modelList a {
-            display: block;
-            padding: 10px 20px;
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            color: white;
-            border-radius: 25px;
-            text-decoration: none;
-            transition: transform 0.3s ease;
-        }
-
-        #modelList a:hover {
-            transform: translateY(-2px);
+        .saved-models h3 {
+            margin: 0 0 10px 0;
+            color: #495057;
         }
 
         .model-view-frame {
@@ -223,6 +228,7 @@
 </head>
 
 <body>
+    <a href="/docs" target="_blank" class="api-docs-button">API Docs</a>
     <div class="container">
         <h1 class="title">Hunyuan3D 2.1 - Multi-View</h1>
         <p class="subtitle">Transform your images into stunning 3D models</p>
@@ -259,6 +265,31 @@
                 <input type="checkbox" id="textureCheckbox">
                 Generate Texture (slower, requires more VRAM)
             </label>
+            <br><br>
+            
+            <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
+                <div>
+                    <label for="formatSelect">Output Format:</label>
+                    <select id="formatSelect" style="margin-left: 10px; padding: 5px; border-radius: 5px; border: 1px solid #ccc;">
+                        <option value="glb">GLB (GLTF Binary)</option>
+                        <option value="obj">OBJ (Wavefront)</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label for="inferenceSteps">Inference Steps:</label>
+                    <input type="number" id="inferenceSteps" value="5" min="1" max="20" 
+                           style="margin-left: 10px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; width: 60px;">
+                </div>
+                
+                <div>
+                    <label for="seedInput">Seed:</label>
+                    <input type="number" id="seedInput" value="1234" min="0" max="4294967295" 
+                           style="margin-left: 10px; padding: 5px; border-radius: 5px; border: 1px solid #ccc; width: 100px;">
+                    <button type="button" onclick="randomSeed()" 
+                            style="margin-left: 5px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc; background: #f8f9fa; cursor: pointer;">🎲</button>
+                </div>
+            </div>
         </div>
 
         <button class="generate-button" id="generateButton" onclick="generateModel()">
@@ -276,22 +307,20 @@
             <h3>🎉 生成完成！</h3>
             <div class="model-viewer" id="modelViewer"></div>
             <a class="download-button" id="downloadButton" download="model.glb">
-                💾 Download GLB
+                💾 Download Model
             </a>
             <button class="reset-button" onclick="resetForm()">
                 🔄 Generate Another
             </button>
         </div>
 
-        <div class="saved-models" id="savedModels">
-            <h2>Saved Models</h2>
-            <ul id="modelList"></ul>
+        <div class="saved-models" id="savedModels" style="margin-top: 20px;">
+            <h3>📁 Previous Models</h3>
+            <select id="historySelect" style="width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #ccc; margin-top: 10px;">
+                <option value="">Select a previous model...</option>
+            </select>
         </div>
 
-        <div class="model-view-frame" id="modelViewFrame" style="display:none;">
-            <iframe id="modelIframe" width="100%" height="600px" frameborder="0"></iframe>
-            <button class="reset-button" onclick="closeModelView()">Close</button>
-        </div>
     </div>
 
     <script>
@@ -303,8 +332,8 @@
         };
         let currentTaskId = null;
 
-        const API_BASE = window.location.hostname === 'localhost' ? 
-            'http://localhost:8860' : 
+        const API_BASE = window.location.hostname === 'localhost' ?
+            'http://localhost:8860' :
             `http://${window.location.hostname}:8860`;
 
         document.querySelectorAll('.upload-section').forEach(section => {
@@ -371,9 +400,12 @@
             document.getElementById('generateButton').disabled = true;
 
             formData.append('texture', document.getElementById('textureCheckbox').checked);
+            formData.append('output_format', document.getElementById('formatSelect').value);
+            formData.append('num_inference_steps', document.getElementById('inferenceSteps').value);
+            formData.append('seed', document.getElementById('seedInput').value);
 
             try {
-                updateStatus('starting', 5);
+                updateStatus('starting', 0, 'Uploading files...');
                 const response = await fetch(`${API_BASE}/send_file`, {
                     method: 'POST',
                     body: formData
@@ -399,12 +431,27 @@
                 const response = await fetch(`${API_BASE}/status/${currentTaskId}`);
                 const data = await response.json();
 
-                updateStatus(data.stage, data.progress, data.message);
+                // 添加調試日誌
+                console.log('Status response:', data);
 
-                if (data.stage === 'completed') {
+                // 使用後端返回的真實進度數據
+                const stage = data.stage || data.status; // 兼容不同的字段名
+                const progress = data.progress || 0;
+                const message = data.message || '';
+                
+                updateStatus(stage, progress, message);
+
+                if (stage === 'completed') {
+                    // 檢查 model_base64 是否存在
+                    if (!data.model_base64) {
+                        console.error('Missing model_base64 in response:', data);
+                        updateStatus('error', 0, '服務器未返回模型數據，請重試');
+                        document.getElementById('generateButton').disabled = false;
+                        return;
+                    }
                     showResult(data.model_base64);
                     fetchModels();
-                } else if (data.stage === 'error') {
+                } else if (stage === 'error') {
                     document.getElementById('generateButton').disabled = false;
                 } else {
                     setTimeout(pollStatus, 2000);
@@ -416,14 +463,40 @@
             }
         }
 
+
         function updateStatus(stage, progress, message) {
             let statusMessage = message || 'Preparing...';
+            let emoji = '⏳';
+            
             switch (stage) {
-                case 'starting': statusMessage = 'Starting generation...'; break;
-                case 'generating_shape': statusMessage = 'Generating 3D shape...'; break;
-                case 'generating_texture': statusMessage = 'Generating texture (this may take a while)...'; break;
-                case 'completed': statusMessage = 'Generation complete!'; break;
-                case 'error': statusMessage = `Error: ${message}`; break;
+                case 'starting': 
+                    statusMessage = '🚀 Starting generation...'; 
+                    emoji = '🚀';
+                    break;
+                case 'generating_shape': 
+                    statusMessage = '🔄 Generating 3D shape...'; 
+                    emoji = '🔄';
+                    break;
+                case 'generating_texture': 
+                    statusMessage = '🎨 Generating texture (this may take a while)...'; 
+                    emoji = '🎨';
+                    break;
+                case 'completed': 
+                    statusMessage = '✅ Generation complete!'; 
+                    emoji = '✅';
+                    break;
+                case 'error': 
+                    statusMessage = `❌ Error: ${message}`; 
+                    emoji = '❌';
+                    break;
+                case 'processing':
+                    statusMessage = '🔄 Processing your request...';
+                    emoji = '🔄';
+                    break;
+                case 'texturing':
+                    statusMessage = '🎨 Adding textures...';
+                    emoji = '🎨';
+                    break;
             }
             document.getElementById('status').textContent = statusMessage;
             document.getElementById('progressFill').style.width = progress + '%';
@@ -431,33 +504,274 @@
 
         function showResult(modelBase64) {
             document.getElementById('progress').style.display = 'none';
-            const blob = base64ToBlob(modelBase64, 'application/octet-stream');
-            const url = URL.createObjectURL(blob);
-            const downloadButton = document.getElementById('downloadButton');
-            downloadButton.href = url;
-            downloadButton.download = `model_${currentTaskId}.glb`;
-            createModelViewer(url);
-            document.getElementById('result').style.display = 'block';
+
+            try {
+                const blob = base64ToBlob(modelBase64, 'application/octet-stream');
+                const url = URL.createObjectURL(blob);
+                const downloadButton = document.getElementById('downloadButton');
+                downloadButton.href = url;
+                const selectedFormat = document.getElementById('formatSelect').value;
+                downloadButton.download = `model_${currentTaskId}.${selectedFormat}`;
+                createModelViewer(url);
+                document.getElementById('result').style.display = 'block';
+            } catch (error) {
+                console.error('Failed to create model blob:', error);
+                updateStatus('error', 0, '模型數據格式錯誤，請重試生成');
+                document.getElementById('generateButton').disabled = false;
+            }
         }
 
-        function createModelViewer(modelUrl) {
+        async function createModelViewer(modelUrl) {
             const modelViewer = document.getElementById('modelViewer');
-            modelViewer.innerHTML = `<model-viewer src="${modelUrl}" alt="Generated 3D Model" auto-rotate camera-controls style="width: 100%; height: 400px; background-color: #f5f5f5;"></model-viewer>`;
+            const selectedFormat = document.getElementById('formatSelect').value;
+            
+            if (selectedFormat === 'glb') {
+                // GLB 格式使用 model-viewer
+                modelViewer.innerHTML = `<model-viewer src="${modelUrl}" alt="Generated 3D Model" auto-rotate camera-controls style="width: 100%; height: 400px; background-color: #f5f5f5;"></model-viewer>`;
+            } else {
+                // 其他格式使用 Three.js
+                modelViewer.innerHTML = `<div id="threeCanvas" style="width: 100%; height: 400px; background-color: #f5f5f5; border-radius: 10px;"></div>`;
+                await createThreeJSViewer(modelUrl, 'threeCanvas', selectedFormat);
+            }
+        }
+
+        async function createThreeJSViewer(modelUrl, containerId, format) {
+            try {
+                // 動態載入 Three.js 模組
+                const THREE = await import('three');
+                const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+                
+                // 根據格式載入對應的載入器
+                let loader, loaderName;
+                switch(format) {
+                    case 'obj':
+                        const { OBJLoader } = await import('three/addons/loaders/OBJLoader.js');
+                        loader = new OBJLoader();
+                        loaderName = 'OBJ';
+                        break;
+                    case 'ply':
+                        const { PLYLoader } = await import('three/addons/loaders/PLYLoader.js');
+                        loader = new PLYLoader();
+                        loaderName = 'PLY';
+                        break;
+                    case 'stl':
+                        const { STLLoader } = await import('three/addons/loaders/STLLoader.js');
+                        loader = new STLLoader();
+                        loaderName = 'STL';
+                        break;
+                    default:
+                        throw new Error(`Unsupported format: ${format}`);
+                }
+
+                const container = document.getElementById(containerId);
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                // 建立場景
+                const scene = new THREE.Scene();
+                scene.background = new THREE.Color(0xf5f5f5);
+
+                // 建立相機
+                const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+                camera.position.set(0, 0, 5);
+
+                // 建立渲染器
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(width, height);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                container.appendChild(renderer.domElement);
+
+                // 加入更好的燈光系統
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
+                scene.add(ambientLight);
+
+                // 主光源
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(2, 2, 2);
+                directionalLight.castShadow = true;
+                scene.add(directionalLight);
+
+                // 補光
+                const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
+                fillLight.position.set(-1, 0, -1);
+                scene.add(fillLight);
+
+                // 頂部光
+                const topLight = new THREE.DirectionalLight(0xffffff, 0.2);
+                topLight.position.set(0, 2, 0);
+                scene.add(topLight);
+
+                // 加入控制器
+                const controls = new OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+
+                // 顯示載入狀態
+                container.innerHTML = `<div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">
+                    <div style="text-align: center;">
+                        <div>🔄 Loading ${loaderName} Model...</div>
+                    </div>
+                </div>`;
+
+                loader.load(
+                    modelUrl,
+                    function (loadedData) {
+                        // 重新加入渲染器
+                        container.innerHTML = '';
+                        container.appendChild(renderer.domElement);
+
+                        let object;
+                        if (format === 'obj') {
+                            // OBJ loader returns a complete object
+                            object = loadedData;
+                            // 添加材質並確保法向量
+                            object.traverse(function (child) {
+                                if (child.isMesh) {
+                                    // 確保幾何體有正確的法向量
+                                    child.geometry.computeVertexNormals();
+                                    
+                                    child.material = new THREE.MeshPhongMaterial({ 
+                                        color: 0xcccccc,
+                                        shininess: 100,
+                                        transparent: false
+                                    });
+                                    child.castShadow = true;
+                                    child.receiveShadow = true;
+                                }
+                            });
+                        } else {
+                            // PLY and STL loaders return geometry
+                            const geometry = loadedData;
+                            
+                            // 確保幾何體有正確的法向量
+                            geometry.computeVertexNormals();
+                            
+                            const material = new THREE.MeshPhongMaterial({ 
+                                color: 0xcccccc,
+                                shininess: 100,
+                                transparent: false
+                            });
+                            object = new THREE.Mesh(geometry, material);
+                            object.castShadow = true;
+                            object.receiveShadow = true;
+                        }
+
+                        // 居中和縮放模型
+                        const box = new THREE.Box3().setFromObject(object);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = box.getSize(new THREE.Vector3());
+                        
+                        object.position.x = -center.x;
+                        object.position.y = -center.y;
+                        object.position.z = -center.z;
+
+                        const maxSize = Math.max(size.x, size.y, size.z);
+                        if (maxSize > 0) {
+                            const scale = 3 / maxSize;
+                            object.scale.setScalar(scale);
+                        }
+
+                        scene.add(object);
+
+                        // 啟動渲染循環
+                        function animate() {
+                            requestAnimationFrame(animate);
+                            controls.update();
+                            renderer.render(scene, camera);
+                        }
+                        animate();
+                    },
+                    function (xhr) {
+                        // 進度回調
+                        if (xhr.lengthComputable) {
+                            const percentComplete = xhr.loaded / xhr.total * 100;
+                            console.log(Math.round(percentComplete) + '% loaded');
+                        }
+                    },
+                    function (error) {
+                        console.error(`Error loading ${loaderName} model:`, error);
+                        container.innerHTML = `
+                            <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">
+                                <div style="text-align: center;">
+                                    <h3>❌ Failed to Load Model</h3>
+                                    <p>Could not display ${loaderName} model</p>
+                                    <p>Please download to view in 3D software</p>
+                                </div>
+                            </div>`;
+                    }
+                );
+
+                // 處理視窗大小變化
+                window.addEventListener('resize', () => {
+                    const newWidth = container.clientWidth;
+                    const newHeight = container.clientHeight;
+                    camera.aspect = newWidth / newHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(newWidth, newHeight);
+                });
+
+            } catch (error) {
+                console.error('Error initializing Three.js:', error);
+                document.getElementById(containerId).innerHTML = `
+                    <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #666;">
+                        <div style="text-align: center;">
+                            <h3>❌ 3D Viewer Error</h3>
+                            <p>Could not initialize 3D viewer</p>
+                            <p>Please download to view in 3D software</p>
+                        </div>
+                    </div>`;
+            }
         }
 
         function base64ToBlob(base64, mimeType) {
-            const byteCharacters = atob(base64);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            try {
+                // 首先檢查 base64 是否存在且為字符串
+                if (!base64 || typeof base64 !== 'string') {
+                    throw new Error('Base64 data is missing or invalid');
+                }
+
+                // 清理 base64 字符串：移除空白字符和換行符
+                let cleanBase64 = base64.replace(/\s/g, '');
+
+                // 驗證 base64 格式
+                if (!cleanBase64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(cleanBase64)) {
+                    throw new Error('Invalid base64 format');
+                }
+
+                // 確保正確的 padding
+                while (cleanBase64.length % 4) {
+                    cleanBase64 += '=';
+                }
+
+                const byteCharacters = atob(cleanBase64);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                return new Blob([byteArray], { type: mimeType });
+            } catch (error) {
+                console.error('Base64 decode error:', error);
+                throw new Error(`Failed to decode base64: ${error.message}`);
             }
-            const byteArray = new Uint8Array(byteNumbers);
-            return new Blob([byteArray], { type: mimeType });
+        }
+
+        function randomSeed() {
+            const randomValue = Math.floor(Math.random() * 4294967295);
+            document.getElementById('seedInput').value = randomValue;
         }
 
         function resetForm() {
             selectedFiles = { front: null, back: null, left: null, right: null };
             currentTaskId = null;
+            
+            // Reset all form inputs
+            document.getElementById('textureCheckbox').checked = false;
+            document.getElementById('inferenceSteps').value = 5;
+            document.getElementById('seedInput').value = 1234;
+            document.getElementById('formatSelect').value = 'glb';
+            
             document.querySelectorAll('.preview').forEach(p => { p.style.display = 'none'; p.src = ''; });
             document.querySelectorAll('.file-input').forEach(i => i.value = '');
             document.getElementById('generateButton').style.display = 'none';
@@ -473,36 +787,130 @@
             try {
                 const response = await fetch(`${API_BASE}/models`);
                 const data = await response.json();
-                const modelList = document.getElementById('modelList');
-                modelList.innerHTML = '';
-                data.models.forEach(modelId => {
-                    const listItem = document.createElement('li');
-                    const link = document.createElement('a');
-                    link.href = '#';
-                    link.textContent = modelId;
-                    link.onclick = () => viewModel(modelId);
-                    listItem.appendChild(link);
-                    modelList.appendChild(listItem);
-                });
+                const historySelect = document.getElementById('historySelect');
+                
+                // 清除現有選項 (保留第一個預設選項)
+                historySelect.innerHTML = '<option value="">Select a previous model...</option>';
+                
+                // 只顯示最新的 10 個模型
+                const recentModels = data.models.slice(0, 10);
+                
+                // 為每個模型獲取詳細信息
+                for (let modelId of recentModels) {
+                    try {
+                        const statusResponse = await fetch(`${API_BASE}/status/${modelId}`);
+                        if (statusResponse.ok) {
+                            const statusData = await statusResponse.json();
+                            
+                            const option = document.createElement('option');
+                            option.value = modelId;
+                            
+                            // 創建更友好的顯示名稱
+                            const shortId = modelId.substring(0, 8);
+                            
+                            // 使用原始檔名（如果有的話）
+                            let displayName = shortId;
+                            if (statusData.original_filenames) {
+                                const filenames = Object.values(statusData.original_filenames);
+                                if (filenames.length > 0) {
+                                    // 取第一個檔案的名稱（去除副檔名）
+                                    const firstFilename = filenames[0];
+                                    const nameWithoutExt = firstFilename.replace(/\.[^/.]+$/, "");
+                                    displayName = nameWithoutExt.length > 20 ? nameWithoutExt.substring(0, 20) + '...' : nameWithoutExt;
+                                }
+                            }
+                            
+                            // 檢查是否有輸出格式信息
+                            const format = statusData.output_format || 'glb';
+                            const status = statusData.stage || statusData.status || 'unknown';
+                            
+                            if (status === 'completed') {
+                                option.textContent = `${format.toUpperCase()} - ${displayName}`;
+                            } else {
+                                option.textContent = `${status} - ${displayName}`;
+                                option.disabled = true; // 禁用未完成的任務
+                            }
+                            
+                            historySelect.appendChild(option);
+                        } else {
+                            // 如果無法獲取狀態，顯示基本信息
+                            const option = document.createElement('option');
+                            option.value = modelId;
+                            option.textContent = `${modelId.substring(0, 8)} - (unavailable)`;
+                            option.disabled = true;
+                            historySelect.appendChild(option);
+                        }
+                    } catch (statusError) {
+                        console.error(`Failed to get status for ${modelId}:`, statusError);
+                        // 添加但禁用
+                        const option = document.createElement('option');
+                        option.value = modelId;
+                        option.textContent = `${modelId.substring(0, 8)} - (error)`;
+                        option.disabled = true;
+                        historySelect.appendChild(option);
+                    }
+                }
+
+                // 添加變更事件監聽器
+                historySelect.onchange = function() {
+                    if (this.value && !this.options[this.selectedIndex].disabled) {
+                        viewModel(this.value);
+                    }
+                };
             } catch (error) {
                 console.error('Failed to fetch models:', error);
             }
         }
 
-        function viewModel(modelId) {
-            const iframe = document.getElementById('modelIframe');
-            iframe.src = `${API_BASE}/models/${modelId}/view`;
-            document.getElementById('modelViewFrame').style.display = 'block';
+        async function viewModel(modelId) {
+            try {
+                // 獲取模型狀態信息
+                const statusResponse = await fetch(`${API_BASE}/status/${modelId}`);
+                if (!statusResponse.ok) {
+                    throw new Error('Model not found');
+                }
+                
+                const statusData = await statusResponse.json();
+                if (statusData.stage !== 'completed' && statusData.status !== 'completed') {
+                    alert('Model is not completed yet');
+                    return;
+                }
+                
+                if (!statusData.model_base64) {
+                    alert('Model data not available');
+                    return;
+                }
+                
+                // 設定當前任務格式
+                const format = statusData.output_format || 'glb';
+                document.getElementById('formatSelect').value = format;
+                
+                // 使用相同的預覽方式
+                showResult(statusData.model_base64);
+                
+                // 滾動到結果區域
+                document.getElementById('result').scrollIntoView({ behavior: 'smooth' });
+                
+            } catch (error) {
+                console.error('Failed to view model:', error);
+                alert('Failed to load model: ' + error.message);
+            }
         }
 
-        function closeModelView() {
-            document.getElementById('modelViewFrame').style.display = 'none';
-            document.getElementById('modelIframe').src = 'about:blank';
-        }
     </script>
 
     <!-- 加載 model-viewer -->
     <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+    
+    <!-- Three.js for OBJ loading -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+            }
+        }
+    </script>
 </body>
 
 </html>
