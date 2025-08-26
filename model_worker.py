@@ -162,17 +162,8 @@ class ModelWorker:
         except Exception as e:
             logger.error(f"Failed to prepare paint pipeline config: {e}")
             self._paint_pipeline_config = None
-        # clean cache in save_dir
-        import shutil
-        for item in os.listdir(self.save_dir):
-            item_path = os.path.join(self.save_dir, item)
-            try:
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                else:
-                    os.remove(item_path)
-            except Exception as e:
-                logger.warning(f"Failed to remove {item_path}: {e}")
+        # Ensure save_dir exists
+        os.makedirs(self.save_dir, exist_ok=True)
             
     def get_queue_length(self):
         """
@@ -221,7 +212,17 @@ class ModelWorker:
         def write_status(stage, progress, message=""):
             with open(status_file, 'w') as f:
                 import json
-                json.dump({'stage': stage, 'progress': progress, 'message': message}, f)
+                status_data = {
+                    'stage': stage, 
+                    'progress': progress, 
+                    'message': message,
+                    'timestamp': params.get('timestamp'),
+                    'original_filenames': params.get('original_filenames')
+                }
+                # Save output format info for API endpoints to use
+                if 'output_format' in params:
+                    status_data['output_format'] = params['output_format']
+                json.dump(status_data, f)
 
         try:
             write_status('starting', 5, "Starting generation task...")
@@ -255,8 +256,23 @@ class ModelWorker:
 
             write_status('generating_shape', 20, "Generating 3D shape...")
 
+            # Define progress callback
+            num_inference_steps = params.get('num_inference_steps', 5)
+            texture_enabled = params.get('texture', False)
+            
+            def progress_callback(step, timestep, latents):
+                # Shape generation: 5% -> 80% (if texture) or 95% (if no texture)
+                progress_range = 75 if texture_enabled else 90
+                current_progress = int(5 + (step / num_inference_steps) * progress_range)
+                write_status('generating_shape', current_progress, f"Generating shape: step {step}/{num_inference_steps}")
+
             # Generate mesh 
-            mesh = self.pipeline(image=image if not isinstance(image, dict) else image.get('front'))[0]
+            mesh = self.pipeline(
+                image=image if not isinstance(image, dict) else image.get('front'),
+                num_inference_steps=num_inference_steps,
+                callback_steps=1,
+                callback=progress_callback
+            )[0]
             logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
 
             # Remove background plane by keeping only the largest connected component
@@ -265,7 +281,8 @@ class ModelWorker:
                 mesh = sorted(mesh_components, key=lambda x: x.area, reverse=True)[0]
 
             # Export initial mesh without texture (following gradio naming)
-            initial_save_path = os.path.join(task_folder, 'white_mesh.glb')
+            output_format = params.get('output_format', 'glb')
+            initial_save_path = os.path.join(task_folder, f'white_mesh.{output_format}')
             mesh.export(initial_save_path)
             
             # Generate HTML viewer
@@ -273,8 +290,8 @@ class ModelWorker:
             
             # Try to generate textured mesh (only if requested)
             textured_save_path = None
-            if params.get('texture', False):
-                write_status('generating_texture', 50, "Generating texture...")
+            if texture_enabled:
+                write_status('generating_texture', 80, "Generating texture...")
                 # Lazy load paint pipeline when needed
                 if self.paint_pipeline is None and self._paint_pipeline_config is not None:
                     try:
@@ -296,6 +313,11 @@ class ModelWorker:
                     logger.info("Starting texture generation...")
                     # Generate textured mesh as obj (as in demo)
                     output_mesh_path_obj = os.path.join(task_folder, 'textured_mesh.obj')
+                    
+                    # TODO: Add progress callback for texture generation if available
+                    # For now, we'll just set progress to a fixed value during this stage
+                    write_status('generating_texture', 85, "Applying texture to the model...")
+
                     textured_path_obj = self.paint_pipeline(
                         mesh_path=initial_save_path,
                         image_path=image if not isinstance(image, dict) else image.get('front'), # Paint pipeline might need a single image
@@ -303,9 +325,15 @@ class ModelWorker:
                         save_glb=False            
                     )
                     
-                    # Convert to GLB
-                    textured_save_path = os.path.join(task_folder, 'textured_mesh.glb')
-                    quick_convert_with_obj2gltf(textured_path_obj, textured_save_path)
+                    # Convert to output format
+                    if output_format == 'glb':
+                        textured_save_path = os.path.join(task_folder, 'textured_mesh.glb')
+                        quick_convert_with_obj2gltf(textured_path_obj, textured_save_path)
+                    else:
+                        # For OBJ format, just copy the original OBJ file
+                        textured_save_path = os.path.join(task_folder, 'textured_mesh.obj')
+                        import shutil
+                        shutil.copy2(textured_path_obj, textured_save_path)
                     
                     # Generate HTML viewer for textured version
                     build_model_viewer_html(task_folder, textured=True)

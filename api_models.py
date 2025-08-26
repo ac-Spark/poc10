@@ -56,6 +56,11 @@ class GenerationRequest(BaseModel):
         ge=1000,
         le=100000
     )
+    output_format: str = Field(
+        "glb",
+        description="Output file format (glb or obj)",
+        pattern="^(glb|obj)$"
+    )
 
 
 class GenerationResponse(BaseModel):

@@ -56,6 +56,38 @@ SAVE_DIR = DEFAULT_SAVE_DIR
 worker_id = str(uuid.uuid4())[:6]
 logger = build_logger("controller", f"{SAVE_DIR}/controller.log")
 
+def clean_old_tasks(max_tasks=30):
+    """
+    Maintain a maximum number of task folders in SAVE_DIR.
+    
+    If the number of existing folders exceeds max_tasks, the oldest folders are removed.
+    
+    Args:
+        max_tasks (int): Maximum number of task folders to keep. Defaults to 30.
+    """
+    try:
+        import shutil
+        from pathlib import Path
+        
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        dirs = [f for f in Path(SAVE_DIR).iterdir() if f.is_dir()]
+        
+        if len(dirs) > max_tasks:
+            # Sort by creation time, oldest first
+            dirs.sort(key=lambda x: x.stat().st_ctime)
+            
+            # Remove oldest folders until we're within the limit
+            folders_to_remove = len(dirs) - max_tasks
+            for i in range(folders_to_remove):
+                try:
+                    shutil.rmtree(dirs[i])
+                    logger.info(f"Removed old task folder: {dirs[i]}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove old task folder {dirs[i]}: {e}")
+                    
+    except Exception as e:
+        logger.error(f"Error during task folder cleanup: {e}")
+
 # Global worker and semaphore instances
 worker = None
 model_semaphore = None
@@ -192,6 +224,9 @@ async def send_generation_task(request: GenerationRequest):
     if not params.get("image"):
         raise HTTPException(status_code=400, detail="Image base64 string is required")
     
+    # Clean old tasks before starting new one
+    clean_old_tasks(max_tasks=30)
+    
     uid = uuid.uuid4()
     try:
         threading.Thread(target=worker.generate, args=(uid, params,)).start()
@@ -216,7 +251,8 @@ async def send_generation_task_file(
     num_inference_steps: int = Form(5, description="Inference steps", ge=1, le=20),
     guidance_scale: float = Form(5.0, description="Guidance scale", ge=0.1, le=20.0),
     num_chunks: int = Form(8000, description="Number of chunks", ge=1000, le=20000),
-    face_count: int = Form(40000, description="Face count", ge=1000, le=100000)
+    face_count: int = Form(40000, description="Face count", ge=1000, le=100000),
+    output_format: str = Form("glb", description="Output format (glb or obj)", regex="^(glb|obj)$")
 ):
     """
     Send a 3D generation task with one or more view images to be processed asynchronously.
@@ -240,17 +276,20 @@ async def send_generation_task_file(
         }
 
         image_params = {}
+        original_filenames = {}
         for view, upload_file in images.items():
-            if upload_file:
+            if upload_file and upload_file.filename:
                 image_data = await upload_file.read()
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
                 image_params[view] = image_base64
+                original_filenames[view] = upload_file.filename
 
         if not image_params:
             logger.error("No valid image files received")
             raise HTTPException(status_code=400, detail="At least one image must be provided")
 
         # Build parameters dict
+        import datetime
         params = {
             "image": image_params,
             "remove_background": remove_background,
@@ -260,8 +299,14 @@ async def send_generation_task_file(
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_chunks": num_chunks,
-            "face_count": face_count
+            "face_count": face_count,
+            "output_format": output_format,
+            "original_filenames": original_filenames,
+            "timestamp": datetime.datetime.now().isoformat()
         }
+        
+        # Clean old tasks before starting new one
+        clean_old_tasks(max_tasks=30)
         
         uid = uuid.uuid4()
         threading.Thread(target=worker.generate, args=(uid, params,)).start()
@@ -303,28 +348,32 @@ async def status(uid: str):
 
     if not os.path.exists(task_folder) or not os.path.exists(status_file):
         # Fallback for tasks that started before this change or if status file is missing
-        # Check for final files as a last resort
-        textured_file_path = os.path.join(task_folder, 'textured_mesh.glb')
-        white_file_path = os.path.join(task_folder, 'white_mesh.glb')
-        if os.path.exists(textured_file_path) or os.path.exists(white_file_path):
-            file_path = textured_file_path if os.path.exists(textured_file_path) else white_file_path
-            try:
-                base64_str = base64.b64encode(open(file_path, 'rb').read()).decode()
-                return JSONResponse({'status': 'completed', 'progress': 100, 'model_base64': base64_str})
-            except Exception as e:
-                logger.error(f"Error reading file {file_path}: {e}")
-                return JSONResponse({'status': 'error', 'progress': 0, 'message': 'Failed to read generated file'})
-        else:
-            return JSONResponse({'status': 'processing', 'progress': 10, 'message': 'Task folder exists, but status is unknown.'})
+        # Check for final files as a last resort (try both glb and obj)
+        for ext in ['glb', 'obj']:
+            textured_file_path = os.path.join(task_folder, f'textured_mesh.{ext}')
+            white_file_path = os.path.join(task_folder, f'white_mesh.{ext}')
+            if os.path.exists(textured_file_path) or os.path.exists(white_file_path):
+                file_path = textured_file_path if os.path.exists(textured_file_path) else white_file_path
+                try:
+                    base64_str = base64.b64encode(open(file_path, 'rb').read()).decode()
+                    return JSONResponse({'status': 'completed', 'progress': 100, 'model_base64': base64_str})
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {e}")
+                    return JSONResponse({'status': 'error', 'progress': 0, 'message': 'Failed to read generated file'})
+        
+        return JSONResponse({'status': 'processing', 'progress': 10, 'message': 'Task folder exists, but status is unknown.'})
 
     try:
         with open(status_file, 'r') as f:
             import json
             status_data = json.load(f)
         
-        if status_data.get('status') == 'completed':
-            textured_file_path = os.path.join(task_folder, 'textured_mesh.glb')
-            white_file_path = os.path.join(task_folder, 'white_mesh.glb')
+        if status_data.get('stage') == 'completed':
+            # Get output format from status data, default to 'glb'
+            output_format = status_data.get('output_format', 'glb')
+            
+            textured_file_path = os.path.join(task_folder, f'textured_mesh.{output_format}')
+            white_file_path = os.path.join(task_folder, f'white_mesh.{output_format}')
             
             file_path = None
             if os.path.exists(textured_file_path):
