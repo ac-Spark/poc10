@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 
 class GenerationRequest(BaseModel):
     """Request model for 3D generation API"""
-    image: str = Field(
-        ..., 
-        description="Base64 encoded input image for 3D generation",
+    image: Optional[str] = Field(
+        None, 
+        description="Base64 encoded input image for 3D generation (optional when using file upload)",
         example="iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP8z4AATAxEcQAz0QEHOoQ+uAAAAABJRU5ErkJggg=="
     )
     remove_background: bool = Field(

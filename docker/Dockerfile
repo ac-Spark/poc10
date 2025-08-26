@@ -38,12 +38,14 @@ ENV PATH="/workspace/miniconda3/bin:${PATH}"
 # initialize conda
 RUN conda init bash
 
+# Accept conda Terms of Service and set configurations
+RUN conda config --set always_yes true && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
 # create and activate conda environment
 RUN conda create -n hunyuan3d21 python=3.10 && echo "source activate hunyuan3d21" > ~/.bashrc
 ENV PATH="/workspace/miniconda3/envs/hunyuan3d21/bin:${PATH}"
-
-# Set conda to always auto-approve
-RUN conda config --set always_yes true
 
 RUN conda install Ninja
 RUN conda install cuda -c nvidia/label/cuda-12.4.1 -y
@@ -53,42 +55,27 @@ RUN conda install -c conda-forge libstdcxx-ng -y
 
 RUN pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
 
-# Clone Hunyuan3D-2.1 repository
-RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git
+# Create workspace directory for mounted code
+RUN mkdir -p /workspace/Hunyuan3D-2.1
 
-# Install Python dependencies from modified requirements.txt
-RUN pip install -r Hunyuan3D-2.1/requirements.txt
+# Copy requirements first for dependency installation
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt --extra-index-url https://download.blender.org/pypi/
 
-# Install custom_rasterizer
-RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint/custom_rasterizer && \
-    # Set compilation environment variables
-    export TORCH_CUDA_ARCH_LIST="6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0" && \
-    export CUDA_NVCC_FLAGS="-allow-unsupported-compiler" && \
-    # Install with editable mode
-    pip install -e .
+# Copy the hy3dpaint directory for compilation
+COPY hy3dpaint /workspace/Hunyuan3D-2.1/hy3dpaint
 
-# Install DifferentiableRenderer
-RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint/DifferentiableRenderer && \
-    bash compile_mesh_painter.sh
+# Compile the mesh painter
+RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint/DifferentiableRenderer && bash compile_mesh_painter.sh
 
-# Create ckpt folder in hy3dpaint and download RealESRGAN model
-RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint && \
-    mkdir -p ckpt && \
-    wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P ckpt
-
-# Modify textureGenPipeline.py to update config path
-RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint && \
-    sed -i 's/self\.multiview_cfg_path = "cfgs\/hunyuan-paint-pbr\.yaml"/self.multiview_cfg_path = "hy3dpaint\/cfgs\/hunyuan-paint-pbr.yaml"/' textureGenPipeline.py
-
-# Modify multiview_utils.py to update custom_pipeline path
-RUN cd /workspace/Hunyuan3D-2.1/hy3dpaint/utils && \
-    sed -i 's/custom_pipeline = config\.custom_pipeline/custom_pipeline = os.path.join(os.path.dirname(__file__),"..","hunyuanpaintpbr")/' multiview_utils.py
+# Note: custom_rasterizer and DifferentiableRenderer will be available via mounted volume
+# Models and checkpoints will also be available via mounted volume
 
 # Set working directory to the cloned repository
 WORKDIR /workspace/Hunyuan3D-2.1
 
 # Set global library paths to ensure proper linking at runtime
-ENV LD_LIBRARY_PATH="/workspace/miniconda3/envs/hunyuan3d21/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/workspace/miniconda3/envs/hunyuan3d21/lib/python3.10/site-packages/torch/lib:/workspace/miniconda3/envs/hunyuan3d21/lib:${LD_LIBRARY_PATH}"
 
 RUN apt-get install -y libxi6 libgconf-2-4 libxkbcommon-x11-0 libsm6 libxext6 libxrender-dev
 
@@ -106,5 +93,4 @@ RUN rm -f /workspace/*.zip && \
 
 # Set default command
 WORKDIR /workspace/Hunyuan3D-2.1
-RUN mkdir gradio_cache
-CMD ["python", "api_server.py"]
+CMD ["sh", "-c", "if [ \"$LOW_VRAM_MODE\" = \"true\" ]; then python3 api_server.py --host 0.0.0.0 --port ${PORT:-7860} --model_path ${MODEL_PATH:-tencent/Hunyuan3D-2.1} --subfolder ${SUBFOLDER:-hunyuan3d-dit-v2-1} --low_vram_mode; else python3 api_server.py --host 0.0.0.0 --port ${PORT:-7860} --model_path ${MODEL_PATH:-tencent/Hunyuan3D-2.1} --subfolder ${SUBFOLDER:-hunyuan3d-dit-v2-1}; fi"]

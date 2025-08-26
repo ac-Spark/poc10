@@ -4,6 +4,9 @@ CLAUDE.md
 INSTALLATION_SUMMARY.md
 .claude
 cache/
+save_dir/
+hf_cache/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

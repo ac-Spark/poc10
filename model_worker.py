@@ -39,6 +39,55 @@ def quick_convert_with_obj2gltf(obj_path: str, glb_path: str):
     create_glb_with_pbr_materials(obj_path, textures, glb_path)
 
 
+def build_model_viewer_html(save_folder, height=660, width=790, textured=False):
+    """Generate HTML viewer for GLB model (adapted from gradio_app.py)"""
+    if textured:
+        related_path = f"./textured_mesh.glb"
+        template_name = './assets/modelviewer-textured-template.html'
+        output_html_path = os.path.join(save_folder, f'textured_mesh.html')
+    else:
+        related_path = f"./white_mesh.glb"
+        template_name = './assets/modelviewer-template.html'
+        output_html_path = os.path.join(save_folder, f'white_mesh.html')
+    
+    # Simple HTML template if asset files don't exist
+    template_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+    <style>
+        model-viewer {{
+            width: {width}px;
+            height: {height}px;
+            background-color: #f0f0f0;
+        }}
+    </style>
+</head>
+<body>
+    <model-viewer src="{related_path}" alt="3D Model" auto-rotate camera-controls></model-viewer>
+</body>
+</html>"""
+    
+    # Try to use template file if it exists
+    try:
+        if os.path.exists(template_name):
+            with open(template_name, 'r', encoding='utf-8') as f:
+                template_html = f.read()
+                template_html = template_html.replace('#height#', str(height))
+                template_html = template_html.replace('#width#', str(width))
+                template_html = template_html.replace('#src#', related_path)
+    except Exception as e:
+        logger.warning(f"Could not load template {template_name}: {e}")
+    
+    with open(output_html_path, 'w', encoding='utf-8') as f:
+        f.write(template_html)
+    
+    logger.info(f"Generated HTML viewer: {output_html_path}")
+    return output_html_path
+
+
 def load_image_from_base64(image):
     """
     Load an image from base64 encoded string.
@@ -93,16 +142,37 @@ class ModelWorker:
         self.pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(model_path)
         
         # Initialize texture generation pipeline (matching demo.py)
-        max_num_view = 6  # can be 6 to 9
-        resolution = 512  # can be 768 or 512
-        conf = Hunyuan3DPaintConfig(max_num_view, resolution)
-        conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
-        conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-        conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
-        self.paint_pipeline = Hunyuan3DPaintPipeline(conf)
+        # Initialize paint pipeline for texture generation
+        # Initialize paint pipeline only when needed (lazy loading)
+        # This saves GPU memory when texture generation is not requested
+        self.paint_pipeline = None
+        self._paint_pipeline_config = None
+        
+        # Prepare config for lazy loading
+        try:
+            from hy3dpaint.textureGenPipeline import Hunyuan3DPaintPipeline, Hunyuan3DPaintConfig
+            max_num_view = 8
+            resolution = 768
+            conf = Hunyuan3DPaintConfig(max_num_view, resolution)
+            conf.realesrgan_ckpt_path = "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+            conf.multiview_cfg_path = "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+            conf.custom_pipeline = "hy3dpaint/hunyuanpaintpbr"
+            self._paint_pipeline_config = (Hunyuan3DPaintPipeline, conf)
+            logger.info("Paint pipeline config prepared for lazy loading with full resolution.")
+        except Exception as e:
+            logger.error(f"Failed to prepare paint pipeline config: {e}")
+            self._paint_pipeline_config = None
         # clean cache in save_dir
-        for file in os.listdir(self.save_dir):
-            os.remove(os.path.join(self.save_dir, file))
+        import shutil
+        for item in os.listdir(self.save_dir):
+            item_path = os.path.join(self.save_dir, item)
+            try:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove {item_path}: {e}")
             
     def get_queue_length(self):
         """
@@ -143,65 +213,127 @@ class ModelWorker:
         """
         start_time = time.time()
         logger.info(f"Generating 3D model for uid: {uid}")
-        # Handle input image
-        if 'image' in params:
-            image = params["image"]
-            image = load_image_from_base64(image)
-        else:
-            raise ValueError("No input image provided")
 
-        # Convert to RGBA and remove background if needed
-        image = image.convert("RGBA")
-        if image.mode == "RGB":
-            image = self.rembg(image)
+        task_folder = os.path.join(self.save_dir, str(uid))
+        os.makedirs(task_folder, exist_ok=True)
+        status_file = os.path.join(task_folder, 'status.json')
 
-        # Generate mesh 
+        def write_status(stage, progress, message=""):
+            with open(status_file, 'w') as f:
+                import json
+                json.dump({'stage': stage, 'progress': progress, 'message': message}, f)
+
         try:
-            mesh = self.pipeline(image=image)[0]
+            write_status('starting', 5, "Starting generation task...")
+
+            # Handle input image(s)
+            image_input = params.get("image")
+            if not image_input:
+                raise ValueError("No input image provided")
+
+            if isinstance(image_input, dict):
+                # Multi-view case
+                image = {
+                    view: load_image_from_base64(base64_str)
+                    for view, base64_str in image_input.items()
+                }
+            elif isinstance(image_input, str):
+                # Single-view case
+                image = load_image_from_base64(image_input)
+            else:
+                raise TypeError(f"Unsupported image format: {type(image_input)}")
+
+            # Convert to RGBA and remove background if needed
+            if params.get('remove_background', True):
+                if isinstance(image, dict):
+                    # Multi-view case
+                    for view, img in image.items():
+                        image[view] = self.rembg(img.convert("RGBA"))
+                else:
+                    # Single-view case
+                    image = self.rembg(image.convert("RGBA"))
+
+            write_status('generating_shape', 20, "Generating 3D shape...")
+
+            # Generate mesh 
+            mesh = self.pipeline(image=image if not isinstance(image, dict) else image.get('front'))[0]
             logger.info("---Shape generation takes %s seconds ---" % (time.time() - start_time))
-        except Exception as e:
-            logger.error(f"Shape generation failed: {e}")
-            raise ValueError(f"Failed to generate 3D mesh: {str(e)}")
 
-        # Export initial mesh without texture
-        
-        initial_save_path = os.path.join(self.save_dir, f'{str(uid)}_initial.glb')
-        mesh.export(initial_save_path)
-        
-        # Generate textured mesh as obj ( as in demo )
-        try:
-            output_mesh_path_obj = os.path.join(self.save_dir, f'{str(uid)}_texturing.obj')
-            textured_path_obj = self.paint_pipeline(
-                mesh_path=initial_save_path,
-                image_path=image,
-                output_mesh_path=output_mesh_path_obj,
-                save_glb=False            
-            )
-            logger.info("---Texture generation takes %s seconds ---" % (time.time() - start_time))
-            logger.info(f"output_mesh_path: {output_mesh_path_obj} textured_path: {textured_path_obj}")
-            # Use the textured GLB as the final output
-            #final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.{file_type}')
-            #os.rename(output_mesh_path, final_save_path)
+            # Remove background plane by keeping only the largest connected component
+            mesh_components = mesh.split(only_watertight=False)
+            if mesh_components:
+                mesh = sorted(mesh_components, key=lambda x: x.area, reverse=True)[0]
 
-            # Convert textured OBJ to GLB using obj2gltf with PBR support
-            print("convert textured OBJ to GLB")
-            glb_path_textured = os.path.join(self.save_dir, f'{str(uid)}_texturing.glb')
-            quick_convert_with_obj2gltf(textured_path_obj, glb_path_textured)
-            # now rename glb_path to uid_textured.glb
-            print("done.")
-            final_save_path = os.path.join(self.save_dir, f'{str(uid)}_textured.glb')
-            os.rename(glb_path_textured, final_save_path)
-            print(f"final_save_path: {final_save_path}")
-
+            # Export initial mesh without texture (following gradio naming)
+            initial_save_path = os.path.join(task_folder, 'white_mesh.glb')
+            mesh.export(initial_save_path)
             
+            # Generate HTML viewer
+            build_model_viewer_html(task_folder, textured=False)
+            
+            # Try to generate textured mesh (only if requested)
+            textured_save_path = None
+            if params.get('texture', False):
+                write_status('generating_texture', 50, "Generating texture...")
+                # Lazy load paint pipeline when needed
+                if self.paint_pipeline is None and self._paint_pipeline_config is not None:
+                    try:
+                        # Clear shape generation from GPU memory first
+                        if hasattr(self.pipeline, 'to'):
+                            self.pipeline.to('cpu')
+                        torch.cuda.empty_cache()
+                        
+                        # Load paint pipeline
+                        logger.info("Lazy loading paint pipeline...")
+                        PipelineClass, conf = self._paint_pipeline_config
+                        self.paint_pipeline = PipelineClass(conf)
+                        logger.info("Paint pipeline loaded successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to lazy load paint pipeline: {e}")
+                        self.paint_pipeline = None
+                
+                if self.paint_pipeline is not None:
+                    logger.info("Starting texture generation...")
+                    # Generate textured mesh as obj (as in demo)
+                    output_mesh_path_obj = os.path.join(task_folder, 'textured_mesh.obj')
+                    textured_path_obj = self.paint_pipeline(
+                        mesh_path=initial_save_path,
+                        image_path=image if not isinstance(image, dict) else image.get('front'), # Paint pipeline might need a single image
+                        output_mesh_path=output_mesh_path_obj,
+                        save_glb=False            
+                    )
+                    
+                    # Convert to GLB
+                    textured_save_path = os.path.join(task_folder, 'textured_mesh.glb')
+                    quick_convert_with_obj2gltf(textured_path_obj, textured_save_path)
+                    
+                    # Generate HTML viewer for textured version
+                    build_model_viewer_html(task_folder, textured=True)
+                    
+                    logger.info("---Texture generation takes %s seconds ---" % (time.time() - start_time))
+                    logger.info(f"Generated textured mesh: {textured_save_path}")
+                    
+                    # Move paint pipeline back to CPU to free GPU memory
+                    if hasattr(self.paint_pipeline, 'to'):
+                        self.paint_pipeline.to('cpu')
+                    # Move shape pipeline back to GPU
+                    if hasattr(self.pipeline, 'to'):
+                        self.pipeline.to('cuda')
+                    torch.cuda.empty_cache()
+
+            write_status('completed', 100, "Generation complete!")
+
         except Exception as e:
-            logger.error(f"Texture generation failed: {e}")
-            # Fall back to untextured mesh if texture generation fails
-            final_save_path = initial_save_path
-            logger.warning(f"Using untextured mesh as fallback: {final_save_path}")
+            logger.error(f"Generation failed for uid {uid}: {e}")
+            write_status('error', 0, message=str(e))
+            # Re-raise the exception to be handled by the calling thread in api_server
+            raise
 
         if self.low_vram_mode:
             torch.cuda.empty_cache()
             
         logger.info("---Total generation takes %s seconds ---" % (time.time() - start_time))
-        return final_save_path, uid 
+        
+        # Return the best available mesh (textured if available, otherwise white)
+        final_path = textured_save_path if textured_save_path and os.path.exists(textured_save_path) else initial_save_path
+        return final_path, uid 
